@@ -437,8 +437,23 @@
  *	  afs_threshold4 for step four (range from 1 to 100)
  *
  * Version 0.9 beta1
+ *
  *	- bump version to beta for public
  *	- added/corrected version informations and removed obsolete ones
+ *
+ * Version 0.9 beta2
+ *
+ *	- support for setting a default settings profile at governor start without the need of using the tuneable 'profile_number'
+ *	  a default profile can be set with the already available macro 'DEF_PROFILE_NUMBER' check zzmoove_profiles.h for details about
+ *	  which profile numbers are possible. this functionality was only half baken in previous versions, now any given profile will be really
+ *	  applied when the governor starts. the value '0' (=profile name 'none') in 'DEF_PROFILE_NUMBER' disables this profile hardcoding and
+ *	  that's also the default in the source. u still can (with or without enabling a default profile in the macro) as usual use the tuneable
+ *	  'profile_number' to switch to a desired profile via sysfs at any later time after governor has started
+ *	- added 'blocking' of sysfs in all tuneables during apply of a settings profile to avoid a possible and unwanted overwriting/double
+ *	  setting of tuneables mostly in combination with tuning apps where the tuneable apply order isn't influenceable
+ *	- added tuneable 'profile_list' for printing out a list of all profiles which are available in the profile header file
+ *	- fixed non setting of 'scaling_block_force_down' tuneable when applying profiles
+ *	- some documentation added and a little bit of source cleaning
  *
  * ---------------------------------------------------------------------------------------------------------------------------------------------------------
  * -                                                                                                                                                       -
@@ -594,7 +609,7 @@ static bool force_down_scaling = false;				// ZZ: force down scaling flag
 static bool cancel_up_scaling = false;				// ZZ: cancel up scaling flag
 static bool hotplug_up_in_progress;				// ZZ: flag for hotplug up function call - block if hotplugging is in progress
 static bool hotplug_down_in_progress;				// ZZ: flag for hotplug down function call - block if hotplugging is in progress
-static bool set_profile_active = false;				// ZZ: flag to avoid change of any tuneables during profile setting
+static bool set_profile_active = false;				// ZZ: flag to avoid changing of any tuneables during profile apply
 
 // ZZ: current load & frequency for hotplugging work
 static unsigned int cur_load = 0;
@@ -2251,7 +2266,7 @@ static ssize_t store_hotplug_idle_threshold(struct kobject *a, struct attribute 
 	return count;
 }
 
-// ZZ: tuneable hotplug idle frequency -> frequency from where the hotplug idle should begin. possible values all valid system frequenies
+// ZZ: tuneable hotplug idle frequency -> frequency from where the hotplug idle should begin. possible values: all valid system frequenies
 static ssize_t store_hotplug_idle_freq(struct kobject *a,
 					  struct attribute *b,
 					  const char *buf, size_t count)
@@ -2409,6 +2424,7 @@ static ssize_t store_scaling_block_force_down(struct kobject *a, struct attribut
 	return count;
 }
 
+// ZZ: function for switching a settings profile either at governor start by macro 'DEF_PROFILE_NUMBER' or later by tuneable 'profile_number'
 static inline int set_profile(int profile_num)
 {
 	struct cpufreq_frequency_table *table;		// ZZ: for tuneables using system table
@@ -2418,7 +2434,7 @@ static inline int set_profile(int profile_num)
 
 	table = cpufreq_frequency_get_table(0);		// ZZ: for tuneables using system table
 	set_profile_active = true;			// ZZ: avoid additional setting of tuneables during following loop
-	
+
 	for (i = 0; (unlikely(zzmoove_profiles[i].profile_number != PROFILE_TABLE_END)); i++) {
 	    if (unlikely(zzmoove_profiles[i].profile_number == profile_num)) {
 
@@ -3023,7 +3039,7 @@ static inline int set_profile(int profile_num)
 
 		// ZZ: set current profile name
 		strncpy(dbs_tuners_ins.profile, zzmoove_profiles[i].profile_name, sizeof(dbs_tuners_ins.profile));
-		set_profile_active = false;
+		set_profile_active = false; // ZZ: profile found - allow setting of tuneables again
 		return 1;
 	    }
 	}
@@ -3033,6 +3049,7 @@ set_profile_active = false;
 return 0;
 }
 
+// ZZ: tunable profile number -> for switching settings profiles, check zzmoove_profiles.h file for possible values
 static ssize_t store_profile_number(struct kobject *a, struct attribute *b,
 					const char *buf, size_t count)
 {
@@ -3051,7 +3068,7 @@ static ssize_t store_profile_number(struct kobject *a, struct attribute *b,
 	    strncpy(dbs_tuners_ins.profile, custom_profile, sizeof(dbs_tuners_ins.profile));
 	return count;
 	}
-	
+
 	// ZZ: set profile and check result
 	ret_profile = set_profile(input);
 
@@ -3283,9 +3300,10 @@ static ssize_t show_profile_list(struct device *dev, struct device_attribute *at
     char profiles[256];
 
     for (i = 0; (zzmoove_profiles[i].profile_number != PROFILE_TABLE_END); i++) {
-    c += sprintf(profiles+c, "profile: %d" "name: %s\n", zzmoove_profiles[i].profile_number, zzmoove_profiles[i].profile_name);
+	c += sprintf(profiles+c, "profile: %d " "name: %s\n", zzmoove_profiles[i].profile_number,
+	zzmoove_profiles[i].profile_name);
     }
-return sprintf(buf, profiles);
+    return sprintf(buf, profiles);
 }
 
 static DEVICE_ATTR(profile_list, S_IRUGO , show_profile_list, NULL);
@@ -3984,12 +4002,12 @@ static void __cpuinit powersave_early_suspend(struct early_suspend *handler)
 	    queue_work_on(0, dbs_wq, &hotplug_online_work);
 	}
 
-	if (dbs_tuners_ins.fast_scaling_up > 4)  				// Yank: set scaling mode
+	if (dbs_tuners_ins.fast_scaling_up > 4)					// Yank: set scaling mode
 	    scaling_mode_up   = 0;						// ZZ: auto fast scaling
 	else
 	    scaling_mode_up   = dbs_tuners_ins.fast_scaling_up;			// Yank: fast scaling up only
 
-	if (dbs_tuners_ins.fast_scaling_down > 4)  				// Yank: set scaling mode
+	if (dbs_tuners_ins.fast_scaling_down > 4)				// Yank: set scaling mode
 	    scaling_mode_down = 0;						// ZZ: auto fast scaling
 	else
 	    scaling_mode_down = dbs_tuners_ins.fast_scaling_down;		// Yank: fast scaling up only
@@ -4129,12 +4147,12 @@ static void __cpuinit powersave_late_resume(struct early_suspend *handler)
 
 	evaluate_scaling_order_limit_range(0, 0, suspend_flag, 0);		// ZZ: table order detection and limit optimizations
 
-	if (dbs_tuners_ins.fast_scaling_up > 4)  				// Yank: set scaling mode
+	if (dbs_tuners_ins.fast_scaling_up > 4)					// Yank: set scaling mode
 	    scaling_mode_up   = 0;						// ZZ: auto fast scaling
 	else
 	    scaling_mode_up   = dbs_tuners_ins.fast_scaling_up;			// Yank: fast scaling up only
 
-	if (dbs_tuners_ins.fast_scaling_down > 4)  				// Yank: set scaling mode
+	if (dbs_tuners_ins.fast_scaling_down > 4)				// Yank: set scaling mode
 	    scaling_mode_down = 0;						// ZZ: auto fast scaling
 	else
 	    scaling_mode_down = dbs_tuners_ins.fast_scaling_down;		// Yank: fast scaling up only
